@@ -101,9 +101,9 @@ jobs:
 
     - name: 优化编译配置
       run: |
-        [ -e $OPTIMIZE_SH ] && cp $OPTIMIZE_SH openwrt/
-        chmod +x openwrt/optimize-build.sh
-        cd openwrt && ./optimize-build.sh
+        [ -e $OPTIMIZE_SH ] && cp $YH_SH openwrt/
+        chmod +x openwrt/yh.sh
+        cd openwrt && ./yh.sh
 
     - name: 下载软件包
       run: |
