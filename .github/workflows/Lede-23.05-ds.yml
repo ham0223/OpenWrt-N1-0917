@@ -163,7 +163,7 @@ jobs:
         ls -l
         
     - name: 打包内核
-      uses: unifreq/openwrt-packit@master
+      uses: unifreq/openwrt_packit@master
       env:
         WHOAMI: ham
         OPENWRT_ARMVIRT: openwrt-armvirt/*.tar.gz
