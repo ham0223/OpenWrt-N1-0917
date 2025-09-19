@@ -3,7 +3,6 @@ name: Lede-23.05-ds
 on:
   repository_dispatch:
   workflow_dispatch:
-
   #schedule:
    #- cron: 0 16 * * 4
 
@@ -35,7 +34,6 @@ jobs:
 
     - name: 计算编译线程数
       run: |
-        # 获取CPU核心数并计算最佳线程数（核心数-1）
         CPUS=$(nproc)
         MAKE_JOBS=$((CPUS > 1 ? CPUS - 1 : 1))
         echo "MAKE_JOBS=$MAKE_JOBS" >> $GITHUB_ENV
@@ -83,17 +81,21 @@ jobs:
       working-directory: /workdir
       run: |
         git clone --depth=1 --single-branch $REPO_URL -b $REPO_BRANCH openwrt
-        ln -sf /workdir/openwrt $GITHUB_WORKSPACE/openwrt
+        ln -sf /workdir/openwrt $GITHUB_WORKSPACE/openwrt  # 软链接到仓库根目录
         cd openwrt
         useVersionInfo=$(git show -s --date=short --format="date: %cd<br/>commit: %s<br/>commit hash: %H")
         echo "useVersionInfo=$useVersionInfo" >> $GITHUB_ENV
         echo "DATE=$(date "+%Y-%m-%d %H:%M:%S")" >> $GITHUB_ENV
         echo "tag_name=$(date +%Y%m%d)" >> $GITHUB_ENV
 
+    # --- 修正：所有路径指向仓库根目录 ---
     - name: 应用基础配置
       run: |
-        [ -e $FEEDS_CONF ] && cp $FEEDS_CONF openwrt/feeds.conf.default
-        chmod +x $DIY_P1_SH
+        # 复制feeds配置（必须用$GITHUB_WORKSPACE指向仓库根目录）
+        [ -e $GITHUB_WORKSPACE/$FEEDS_CONF ] && cp $GITHUB_WORKSPACE/$FEEDS_CONF openwrt/feeds.conf.default
+        # 赋予DIY脚本执行权限
+        chmod +x $GITHUB_WORKSPACE/$DIY_P1_SH
+        # 进入openwrt目录并执行DIY脚本
         cd openwrt && $GITHUB_WORKSPACE/$DIY_P1_SH
 
     - name: 更新并安装feeds
@@ -102,17 +104,26 @@ jobs:
         ./scripts/feeds update -a
         ./scripts/feeds install -a
 
+    # --- 修正：所有路径指向仓库根目录 ---
     - name: 应用自定义配置
       run: |
-        [ -e $FILES ] && cp -r $FILES openwrt/files
-        [ -e $CONFIG_FILE ] && cp $CONFIG_FILE openwrt/.config
-        chmod +x $DIY_P2_SH
+        # 复制files目录（必须用$GITHUB_WORKSPACE指向仓库根目录）
+        [ -e $GITHUB_WORKSPACE/$FILES ] && cp -r $GITHUB_WORKSPACE/$FILES openwrt/files
+        # 复制预配置文件
+        [ -e $GITHUB_WORKSPACE/$CONFIG_FILE ] && cp $GITHUB_WORKSPACE/$CONFIG_FILE openwrt/.config
+        # 赋予DIY脚本执行权限
+        chmod +x $GITHUB_WORKSPACE/$DIY_P2_SH
+        # 进入openwrt目录并执行DIY脚本
         cd openwrt && $GITHUB_WORKSPACE/$DIY_P2_SH
 
+    # --- 修正：所有路径指向仓库根目录 ---
     - name: 优化编译配置
       run: |
-        [ -e $OPTIMIZE_SH ] && cp $OPTIMIZE_SH openwrt/
+        # 复制优化脚本到openwrt目录
+        [ -e $GITHUB_WORKSPACE/$OPTIMIZE_SH ] && cp $GITHUB_WORKSPACE/$OPTIMIZE_SH openwrt/
+        # 赋予优化脚本执行权限
         chmod +x openwrt/optimize-build.sh
+        # 执行优化脚本
         cd openwrt && ./optimize-build.sh
 
     - name: 下载软件包
@@ -151,14 +162,17 @@ jobs:
         mkdir openwrt-armvirt
         cp openwrt/bin/targets/*/*/*.tar.gz /workdir/upload/
         mv openwrt/bin/targets/*/*/*.tar.gz openwrt-armvirt/
-        echo -e "\n"
+        echo -e "
+"
         echo "列出空间占用前10的目录或文件："
         sudo du -h --max-depth=1 /workdir |sort -nr | head -10
         rm -rf /workdir/openwrt/
-        echo -e "\n"
+        echo -e "
+"
         echo "清理之后："
         df -hT
-        echo -e "\n"
+        echo -e "
+"
         echo "/workdir路径文件"
         ls -l
         
@@ -195,7 +209,7 @@ jobs:
               
               更新说明：
               2025-0418：本固件所含插件，请看主页图片。
-              2025-0919：同步上游的更新，测试DeepSeek优化效果。
+              2025-0919：同步上游的更新，测试元宝优化效果。
 
     - name: 删除运行记录
       uses: Mattraks/delete-workflow-runs@main
