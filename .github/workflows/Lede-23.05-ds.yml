@@ -3,9 +3,8 @@ name: Lede-23.05
 on:
   repository_dispatch:
   workflow_dispatch:
-  # 建议使用 workflow_dispatch 手动触发，而非定时，以节省资源
-  # schedule:
-  #   - cron: '0 16 * * 4' # UTC时间，对应北京时间的周五零点。如需使用，请取消注释
+  #schedule:
+    #- cron: '0 16 * * 4'  # 注意：cron 表达式应该用引号括起来
 
 env:
   REPO_URL: https://github.com/coolsnowwolf/lede
@@ -16,53 +15,54 @@ env:
   DIY_P2_SH: N1/Lede/diy-part2.sh
   FILES: N1/Lede/files
   TZ: Asia/Shanghai
-  # 使用内置的 GITHUB_TOKEN 足以完成上传 release 的操作，除非有跨仓库需求，否则可简化
-  # GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }} # 这是默认存在的，无需在 secrets 中设置
+  # 使用默认的 GITHUB_TOKEN 而不是自定义的 MY_TOKEN
+  # GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
 jobs:
   build:
     runs-on: ubuntu-24.04
-    # 策略：尽可能复用编译环境，但核心的源码更新和编译步骤必须运行
-    strategy:
-      matrix:
-        # 如果需要为多个设备编译，可以在这里定义矩阵
-        # device: [n1, r4s]
-      fail-fast: false
 
     steps:
-    - name: 创建并设置编译空间权限
+    - name: 创建编译空间挂载点
       run: |
         sudo mkdir -p /workdir
-        sudo chown -R "$USER:$GROUPS" /workdir
-
+        sudo chown $USER:$GROUPS /workdir
+        
     - name: 最大化编译空间
       uses: easimon/maximize-build-space@master
       with:
         root-reserve-mb: 2048
-        swap-size-mb: 2048 # 如果内存紧张，适当增加Swap可能有助于防止OOM
+        swap-size-mb: 1024
+        # 移除了 build-mount-path 参数，因为它可能已不再支持
+        overprovision-lvm: 'true'
         remove-dotnet: 'true'
         remove-android: 'true'
         remove-haskell: 'true'
         remove-codeql: 'true'
         remove-docker-images: 'true'
 
+    - name: 检查Actions
+      uses: actions/checkout@v4
+
     - name: 检查服务器配置
       run: |
-        echo "⚠️ 性能提示：云编译服务器性能有限，请谨慎选择插件，避免Node.js等重型组件。"
-        echo "--------------------------系统信息--------------------------"
-        echo "CPU: $(nproc) 核 | 型号: $(grep -m1 "model name" /proc/cpuinfo | cut -d: -f2 | sed 's/^[ \t]*//')"
-        echo "内存: $(free -h | awk '/^Mem:/{print $2}')"
-        echo "硬盘:"
+        echo "警告⚠"
+        echo "分配的服务器性能有限，若选择的插件过多，务必注意CPU性能！"
+        echo "云编译建议取消勾选Node.js及其相关插件！"
+        echo "已知CPU型号（降序）：8370C,8272CL,8171M,E5系列"
+        echo "--------------------------CPU信息--------------------------"
+        echo "CPU物理数量:$(cat /proc/cpuinfo| grep "physical id"| sort| uniq| wc -l)"
+        echo -e "CPU核心及版本信息：$(cat /proc/cpuinfo | grep name | cut -f2 -d: | uniq -c) \n"
+        echo "--------------------------内存信息--------------------------"
+        echo "已安装内存详细信息："
+        sudo lshw -short -C memory | grep GiB
+        echo -e "\n"
+        echo "--------------------------硬盘信息--------------------------"
+        echo -e  "硬盘数量：$(ls /dev/sd* | grep -v [1-9] | wc -l) \n"
+        echo "硬盘详情："
         df -Th
-        echo "--------------------------编译目录--------------------------"
-        df -Th /workdir
 
-    - name: 检查Actions代码
-      uses: actions/checkout@v4
-      with:
-        path: repository # 将仓库代码检出到 repository 目录，与 /workdir 分开
-
-    - name: 安装编译环境与依赖
+    - name: 初始化编译环境
       env:
         DEBIAN_FRONTEND: noninteractive
       run: |
@@ -75,196 +75,136 @@ jobs:
         libreadline-dev libssl-dev libtool llvm lrzsz msmtp ninja-build p7zip p7zip-full patch pkgconf \
         python3 python3-pyelftools python3-setuptools qemu-utils rsync scons squashfs-tools subversion \
         swig texinfo uglifyjs upx-ucl unzip vim wget xmlto xxd zlib1g-dev libfuse-dev
-        # 清理缓存，节省空间
-        sudo apt-get autoremove -y --purge
-        sudo apt-get clean
-        sudo rm -rf /var/lib/apt/lists/*
+        sudo -E apt-get -qq autoremove --purge
+        sudo -E apt-get -qq clean
         sudo timedatectl set-timezone "$TZ"
-        # 设置ccache，这是加速编译的关键
-        echo "/workdir/ccache_dir" > /tmp/ccache_path
-        echo "max_size = 5.0G" > /tmp/ccache_config
-        # 显示最终磁盘状态
-        echo "环境安装完毕，当前磁盘状态:"
+        echo "硬盘详情："
         df -Th
-
-    - name: 配置CCache
-      run: |
-        mkdir -p /workdir/ccache_dir
-        echo "CCACHE_DIR=/workdir/ccache_dir" >> $GITHUB_ENV
-        echo "CCACHE_CONFIGPATH=/tmp/ccache_config" >> $GITHUB_ENV
-        echo "CCACHE_MAXSIZE=5G" >> $GITHUB_ENV
-        # 将ccache加入到PATH最前面
-        echo "/usr/lib/ccache" >> $GITHUB_PATH
 
     - name: 克隆源码
-      id: clone_code
       working-directory: /workdir
-      env:
-        # 设置Git参数，避免无关历史记录，加快克隆
-        GIT_CLONE_SPARSE: 1
-        GIT_DEPTH: 1
       run: |
-        # 使用浅克隆和稀疏检出（如果支持）来加快速度
-        git clone --depth 1 --single-branch --branch "$REPO_BRANCH" "$REPO_URL" openwrt
-        # 创建软链接到GITHUB_WORKSPACE，方便后续步骤访问
-        ln -sf /workdir/openwrt "$GITHUB_WORKSPACE/openwrt"
+        df -hT $PWD
+        git clone $REPO_URL -b $REPO_BRANCH openwrt
+        ln -sf /workdir/openwrt $GITHUB_WORKSPACE/openwrt
         cd openwrt
-        # 记录版本信息
-        commit_info=$(git log -1 --format="%cd :: %s" --date=short)
-        echo "useVersionInfo=$commit_info" >> $GITHUB_ENV
-        echo "BUILD_DATE=$(date +%Y%m%d)" >> $GITHUB_ENV
-        echo "BUILD_DATETIME=$(date +%Y%m%d%H%M)" >> $GITHUB_ENV
+        useVersionInfo=$(git show -s --date=short --format="date: %cd<br/>commit: %s<br/>commit hash: %H")
+        echo "useVersionInfo=$useVersionInfo" >> $GITHUB_ENV
+        echo "DATE=$(date "+%Y-%m-%d %H:%M:%S")" >> $GITHUB_ENV
+        echo "tag_name=$(date +%Y%m%d)" >> $GITHUB_ENV
 
-    - name: 应用自定义配置 (Part 1)
+    - name: 加载DIY_P1
       run: |
-        # 复制feeds配置文件
-        [ -e "$FEEDS_CONF" ] && cp -f "$FEEDS_CONF" openwrt/feeds.conf.default
-        # 执行第一部分自定义脚本
-        chmod +x "$DIY_P1_SH"
+        [ -e $FEEDS_CONF ] && mv $FEEDS_CONF openwrt/feeds.conf.default
+        chmod +x $DIY_P1_SH
         cd openwrt
-        "$GITHUB_WORKSPACE/$DIY_P1_SH"
+        $GITHUB_WORKSPACE/$DIY_P1_SH
 
-    - name: 更新并安装Feeds
-      run: |
-        cd openwrt
-        # 先更新，再安装
-        ./scripts/feeds update -a
-        ./scripts/feeds install -a
+    - name: 更新feeds
+      run: cd openwrt && ./scripts/feeds update -a
 
-    - name: 应用自定义配置 (Part 2)
+    - name: 安装feeds
+      run: cd openwrt && ./scripts/feeds install -a
+
+    - name: 加载DIY_P2
       run: |
-        # 复制文件目录和配置文件
-        [ -e "$FILES" ] && cp -rf "$FILES" openwrt/files
-        [ -e "$CONFIG_FILE" ] && cp -f "$CONFIG_FILE" openwrt/.config
-        # 执行第二部分自定义脚本
-        chmod +x "$DIY_P2_SH"
+        [ -e $FILES ] && mv $FILES openwrt/files
+        [ -e $CONFIG_FILE ] && mv $CONFIG_FILE openwrt/.config
+        chmod +x $DIY_P2_SH
         cd openwrt
-        "$GITHUB_WORKSPACE/$DIY_P2_SH"
+        $GITHUB_WORKSPACE/$DIY_P2_SH
 
     - name: 下载软件包
-      id: download_packages
+      id: package
       run: |
         cd openwrt
-        # 生成默认配置
         make defconfig
-        # 并行下载，失败重试。这里是加速编译的关键预处理步骤
-        make -j8 download || make -j8 download
-        # 检查并删除无效的小文件（通常是下载失败的文件）
-        find dl -size -1024c -delete
-        echo "软件包下载完成，磁盘状态:"
+        make download -j8
+        find dl -size -1024c -exec ls -l {} \;
+        find dl -size -1024c -exec rm -f {} \;
+        echo "硬盘详情："
         df -Th
-
+                
     - name: 编译固件
-      id: compile_firmware
-      env:
-        # 设置编译环境变量，控制编译过程
-        # 使用所有可用核心进行编译
-        MAKE_J: $(nproc)
-        # 启用CCache加速
-        CCACHE_DIR: /workdir/ccache_dir
-        CCACHE_MAXSIZE: 5G
+      id: compile
       run: |
         cd openwrt
-        echo "开始编译，使用 $(nproc) 线程..."
-        # 编译策略：第一次使用多线程，失败后减少线程数重试，最后详细模式
-        make -j$(nproc) 2>&1 | tee build_log.txt || \
-        make -j$(( $(nproc) / 2 )) 2>&1 | tee build_log_retry.txt || \
-        make -j1 V=s 2>&1 | tee build_log_verbose.txt
-        
-        # 检查编译结果
-        if [ -f bin/targets/*/*/*.tar.gz ]; then
-          echo "status=success" >> $GITHUB_OUTPUT
-          # 提取设备名称
-          grep '^CONFIG_TARGET.*DEVICE.*=y' .config | sed -r 's/.*DEVICE_(.*)=y/\1/' > DEVICE_NAME
-          [ -s DEVICE_NAME ] && echo "DEVICE_NAME=_$(cat DEVICE_NAME)" >> $GITHUB_ENV
-        else
-          echo "status=failure" >> $GITHUB_OUTPUT
-          echo "编译失败，最后100行日志:"
-          tail -100 build_log*.txt
-          exit 1
-        fi
+        echo -e "$(nproc) thread compile"
+        make -j$(nproc) || make -j1 || make -j1 V=s
+        echo "status=success" >> $GITHUB_OUTPUT
+        grep '^CONFIG_TARGET.*DEVICE.*=y' .config | sed -r 's/.*DEVICE_(.*)=y/\1/' > DEVICE_NAME
+        [ -s DEVICE_NAME ] && echo "DEVICE_NAME=_$(cat DEVICE_NAME)" >> $GITHUB_ENV
+        echo "FILE_DATE=_$(date +"%Y%m%d%H%M")" >> $GITHUB_ENV
 
-    - name: 整理编译输出
-      if: success()
+    - name: 清理磁盘空间
+      if: (!cancelled())
       run: |
-        echo "编译完成，整理输出文件..."
-        mkdir -p /workdir/upload/firmware /workdir/upload/config
+        echo "清理之前："
+        df -hT
+        mkdir openwrt-armvirt
+        mkdir /workdir/upload
+        cp openwrt/bin/targets/*/*/*.tar.gz /workdir/upload/
+        mv openwrt/bin/targets/*/*/*.tar.gz openwrt-armvirt/
+        echo -e "\n"
+        echo "列出空间占用前10的目录或文件："
+        sudo du -h --max-depth=1 /workdir |sort -nr | head -10
+        rm -rf /workdir/openwrt/
+        echo -e "\n"
+        echo "清理之后："
+        df -hT
+        echo -e "\n"
+        echo "/workdir路径文件"
+        ls -l
+        echo -e "\n"
+        echo "列出空间占用前10的目录或文件："
+        sudo du -h --max-depth=1 /workdir |sort -nr | head -10
         
-        # 复制所有生成的固件文件
-        cp openwrt/bin/targets/*/*/*.tar.gz /workdir/upload/firmware/ 2>/dev/null || true
-        cp openwrt/bin/targets/*/*/*.img.gz /workdir/upload/firmware/ 2>/dev/null || true
-        
-        # 备份重要配置文件
-        cp openwrt/.config /workdir/upload/config/ 2>/dev/null || true
-        cp openwrt/feeds.conf.default /workdir/upload/config/ 2>/dev/null || true
-        
-        echo "输出文件列表:"
-        find /workdir/upload -type f
-
-    - name: 打包内核（使用N1专用打包）
-      if: success()
+    - name: 打包内核
       uses: unifreq/openwrt_packit@master
       env:
-        OPENWRT_ARMVIRT: /workdir/upload/firmware/*.tar.gz
+        WHOAMI: ham
+        OPENWRT_ARMVIRT: openwrt-armvirt/*.tar.gz
         PACKAGE_SOC: s905d
         KERNEL_AUTO_LATEST: true
-        KERNEL_REPO_URL: https://github.com/breakingbadboy/OpenWrt
+        # KERNEL_REPO_URL: https://github.com/ham0223/OpenWRT-N1/tree/main/opt
+        KERNEL_REPO_URL: breakingbadboy/OpenWrt
         KERNEL_VERSION_NAME: 6.6.y
+        
+    - name: 整理文件
+      run: mv /opt/openwrt_packit/output/* /workdir/upload/
 
-    - name: 复制打包后的文件
-      if: success()
-      run: |
-        # 将打包后的文件也复制到上传目录
-        cp -r /opt/openwrt_packit/output/* /workdir/upload/firmware/ 2>/dev/null || true
-        echo "最终文件列表:"
-        ls -la /workdir/upload/firmware/
-
-    - name: 发布到GitHub Release
-      if: success()
-      uses: softprops/action-gh-release@v1
+    - name: 发布固件
+      uses: ncipollo/release-action@v1
       with:
-        name: "OpenWrt-N1 → ${{ env.BUILD_DATE }}"
-        tag: "N1-23.05_${{ env.BUILD_DATE }}"
-        files: /workdir/upload/firmware/*
+        name: OpenWrt-N1 → ${{ env.DATE }}
+        tag: N1-23.05_${{ env.tag_name }}
+        artifacts: /workdir/upload/*
+        allowUpdates: true
+        token: ${{ secrets.GITHUB_TOKEN }}
         body: |
-          **编译信息**
-          - 源码: ${{ env.REPO_URL }} (${{ env.REPO_BRANCH }})
-          - 版本: ${{ env.useVersionInfo }}
-          - 编译时间: ${{ env.BUILD_DATETIME }}
-          
-          **默认信息**
-          - 管理地址: 192.168.123.2
-          - 用户名: root
-          - 密码: password
-          
-          **更新说明**
-          - 2025-0418: 基础插件集合
-          - 2025-0916: 同步上游更新
-        draft: false
-        prerelease: false
+              ---  使用说明 ---
+              
+              源码: ${{ env.REPO_URL }}
+              分支: ${{ env.REPO_BRANCH }}
+              
+              网关：192.168.123.2
+              用户名：root
+              密码：password
+              
+              更新说明：
+              2025-0418：本固件所含插件，请看主页图片。
+              2025-0916：同步上游的更新。
 
-    - name: 清理工作空间
-      if: always()
-      run: |
-        echo "清理前的磁盘使用情况:"
-        df -Th
-        # 保留ccache以供下次使用，但清理临时文件
-        sudo rm -rf /workdir/openwrt/build_dir/* /workdir/openwrt/staging_dir/* /workdir/openwrt/tmp/*
-        echo "清理后的磁盘使用情况:"
-        df -Th
+    - name: 删除运行记录
+      uses: Mattraks/delete-workflow-runs@main
+      with:
+        retain_days: 3
+        keep_minimum_runs: 5
+        token: ${{ secrets.GITHUB_TOKEN }}
 
-# 注意：删除旧运行记录和发布的步骤需要特殊的token权限，可能不适合所有仓库
-# 如果需要这些功能，请确保已配置正确的secrets并取消注释以下内容
-#    - name: 删除旧运行记录
-#      uses: Mattraks/delete-workflow-runs@main
-#      with:
-#        retain_days: 3
-#        keep_minimum_runs: 5
-#        token: ${{ secrets.GITHUB_TOKEN }}
-#
-#    - name: 删除旧发布
-#      uses: dev-drprasad/delete-older-releases@v0.2.3
-#      with:
-#        keep_latest: 3
-#        delete_tag_pattern: 'N1-23.05_*'
-#        token: ${{ secrets.GITHUB_TOKEN }}
+    - name: 删除自动发布的旧固件
+      uses: dev-drprasad/delete-older-releases@master
+      if: env.UPLOAD_RELEASE == 'true' && !cancelled()
+      with:
+        keep_latest: 7
+        delete_tags: true
