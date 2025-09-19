@@ -104,9 +104,9 @@ jobs:
 
     - name: 优化编译配置
       run: |
-        [ -e $OPTIMIZE_SH ] && cp $YH_SH openwrt/
-        chmod +x openwrt/yh.sh
-        cd openwrt && ./yh.sh
+        [ -e $OPTIMIZE_SH ] && cp $OPTIMIZE_SH openwrt/
+        chmod +x openwrt/optimize-build.sh
+        cd openwrt && ./optimize-build.sh
 
     - name: 下载软件包
       run: |
@@ -156,7 +156,7 @@ jobs:
         ls -l
         
     - name: 打包内核
-      uses: unifreq/openwrt_packit@master
+      uses: unifreq/openwrt-packit@master
       env:
         WHOAMI: ham
         OPENWRT_ARMVIRT: openwrt-armvirt/*.tar.gz
@@ -195,7 +195,7 @@ jobs:
       with:
         retain_days: 3
         keep_minimum_runs: 5
-        token: ${{ env.GITHUB_TOKEN }}
+        token: ${{ secrets.GITHUB_TOKEN }}
 
     - name: 删除自动发布的旧固件
       uses: dev-drprasad/delete-older-releases@master
@@ -203,3 +203,5 @@ jobs:
       with:
         keep_latest: 7
         delete_tags : true
+        token: ${{ secrets.GITHUB_TOKEN }}
+        
