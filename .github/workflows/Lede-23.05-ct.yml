@@ -1,0 +1,182 @@
+name: Lede-23.05-ct
+
+on:
+  repository_dispatch:
+  workflow_dispatch:
+  #schedule:
+  #  - cron: 0 16 * * 4
+
+env:
+  REPO_URL: https://github.com/coolsnowwolf/lede
+  REPO_BRANCH: master
+  FEEDS_CONF: N1/Lede/LE-feeds.conf.default
+  CONFIG_FILE: N1/Lede/2025-0916.config
+  DIY_P1_SH: N1/Lede/diy-part1.sh
+  DIY_P2_SH: N1/Lede/diy-part2.sh
+  FILES: N1/Lede/files
+  TZ: Asia/Shanghai
+  GITHUB_TOKEN: ${{ secrets.MY_TOKEN }}
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+
+    steps:
+    # 1️⃣ 创建编译空间
+    - name: 创建编译空间挂载点
+      run: |
+        sudo mkdir -p /workdir
+        sudo chown $USER:$GROUPS /workdir
+
+    # 2️⃣ 最大化磁盘空间
+    - name: 最大化编译空间
+      uses: easimon/maximize-build-space@master
+      with:
+        root-reserve-mb: 2048
+        swap-size-mb: 1024
+        build-mount-path: /workdir
+        overprovision-lvm: 'true'
+        remove-dotnet: 'true'
+        remove-android: 'true'
+        remove-haskell: 'true'
+        remove-codeql: 'true'
+        remove-docker-images: 'true'
+
+    - name: 检查Actions
+      uses: actions/checkout@v4
+
+    # 3️⃣ 缓存 dl 和 ccache（加速二次编译）
+    - name: 缓存 dl 和 ccache
+      uses: actions/cache@v4
+      with:
+        path: |
+          openwrt/dl
+          /workdir/.ccache
+        key: ${{ runner.os }}-lede-${{ hashFiles(env.CONFIG_FILE) }}
+        restore-keys: |
+          ${{ runner.os }}-lede-
+
+    # 4️⃣ 初始化编译环境（精简 apt 包 & --no-install-recommends）
+    - name: 初始化编译环境
+      run: |
+        sudo apt-get -qq update && \
+        sudo apt-get -qq full-upgrade -y && \
+        sudo apt-get -qq install -y --no-install-recommends \
+          ack antlr3 asciidoc autoconf automake autopoint binutils bison build-essential \
+          bzip2 ccache clang cmake cpio curl device-tree-compiler flex gawk gcc-multilib g++-multilib gettext \
+          genisoimage git gperf haveged help2man intltool libc6-dev-i386 libelf-dev libglib2.0-dev \
+          libgmp3-dev libltdl-dev libmpc-dev libmpfr-dev libncurses5-dev libncursesw5-dev libpython3-dev \
+          libreadline-dev libssl-dev libtool llvm lrzsz msmtp ninja-build p7zip p7zip-full patch pkgconf \
+          python3 python3-pyelftools python3-setuptools qemu-utils rsync scons squashfs-tools subversion \
+          swig texinfo uglifyjs upx-ucl unzip vim wget xmlto xxd zlib1g-dev
+        sudo apt-get -qq autoremove --purge
+        sudo apt-get -qq clean
+        sudo timedatectl set-timezone "$TZ"
+
+    # 5️⃣ 克隆源码
+    - name: 克隆源码
+      working-directory: /workdir
+      run: |
+        git clone $REPO_URL -b $REPO_BRANCH openwrt
+        ln -sf /workdir/openwrt $GITHUB_WORKSPACE/openwrt
+        cd openwrt
+        echo "useVersionInfo=$(git show -s --date=short --format="date: %cd<br/>commit: %s<br/>commit hash: %H")" >> $GITHUB_ENV
+        echo "DATE=$(date "+%Y-%m-%d %H:%M:%S")" >> $GITHUB_ENV
+        echo "tag_name=$(date +%Y%m%d)" >> $GITHUB_ENV
+
+    # 6️⃣ 加载自定义脚本 & feeds（合并步骤）
+    - name: 加载自定义脚本 & feeds
+      run: |
+        [ -e $FEEDS_CONF ] && mv $FEEDS_CONF openwrt/feeds.conf.default
+        chmod +x $DIY_P1_SH $DIY_P2_SH
+        cd openwrt
+        $GITHUB_WORKSPACE/$DIY_P1_SH
+        # 🚀 国内镜像加速 feeds
+        sed -i 's#https://git.openwrt.org#https://mirrors.tuna.tsinghua.edu.cn/git/openwrt#g' feeds.conf.default
+        ./scripts/feeds update -a && ./scripts/feeds install -a
+        [ -e $FILES ] && mv $FILES files
+        [ -e $CONFIG_FILE ] && mv $CONFIG_FILE .config
+        $GITHUB_WORKSPACE/$DIY_P2_SH
+
+    # 7️⃣ 下载软件包（ccache + 国内镜像加速 dl）
+    - name: 下载软件包
+      run: |
+        cd openwrt
+        export USE_CCACHE=1
+        export CCACHE_DIR=/workdir/.ccache
+        ccache -M 2G
+        make defconfig
+        # 🚀 国内镜像加速 dl
+        sed -i 's#downloads.openwrt.org#mirrors.tuna.tsinghua.edu.cn/openwrt#g' ./scripts/download.pl
+        sed -i 's#downloads.openwrt.org#mirrors.tuna.tsinghua.edu.cn/openwrt#g' ./include/download.mk
+        make download -j$(nproc)
+        find dl -size -1024c -exec rm -f {} \;
+
+    # 8️⃣ 编译固件（直接并行编译）
+    - name: 编译固件
+      run: |
+        cd openwrt
+        make -j$(nproc) V=s
+        grep '^CONFIG_TARGET.*DEVICE.*=y' .config | sed -r 's/.*DEVICE_(.*)=y/\1/' > DEVICE_NAME
+        [ -s DEVICE_NAME ] && echo "DEVICE_NAME=_$(cat DEVICE_NAME)" >> $GITHUB_ENV
+        echo "FILE_DATE=_$(date +"%Y%m%d%H%M")" >> $GITHUB_ENV
+
+    # 9️⃣ 清理磁盘空间（直接 mv 避免重复复制）
+    - name: 清理磁盘空间
+      run: |
+        mkdir -p /workdir/upload
+        mv openwrt/bin/targets/*/*/*.tar.gz /workdir/upload/
+        rm -rf /workdir/openwrt/
+
+    # 🔟 打包内核
+    - name: 打包内核
+      uses: unifreq/openwrt_packit@master
+      env:
+        WHOAMI: ham
+        OPENWRT_ARMVIRT: /workdir/upload/*.tar.gz
+        PACKAGE_SOC: s905d
+        KERNEL_AUTO_LATEST: true
+        KERNEL_REPO_URL: breakingbadboy/OpenWrt
+        KERNEL_VERSION_NAME: 6.6.y
+
+    # 1️⃣1️⃣ 整理文件
+    - name: 整理文件
+      run: mv /opt/openwrt_packit/output/* /workdir/upload/
+
+    # 1️⃣2️⃣ 发布固件
+    - name: 发布固件
+      uses: ncipollo/release-action@v1
+      with:
+        name: OpenWrt-N1 → ${{ env.DATE }}
+        tag: N1-23.05_${{ env.tag_name }}
+        artifacts: /workdir/upload/*
+        allowUpdates: true
+        token: ${{ secrets.GITHUB_TOKEN }}
+        body: |
+              ---  使用说明 ---
+              
+              源码: ${{ env.REPO_URL }}
+              分支: ${{ env.REPO_BRANCH }}
+              
+              网关：192.168.123.2
+              用户名：root
+              密码：password
+              
+              更新说明：
+              2025-0418：本固件所含插件，请看主页图片。
+              2025-0919：同步上游的更新。copilot测试
+
+    # 1️⃣3️⃣ 删除运行记录
+    - name: 删除运行记录
+      uses: Mattraks/delete-workflow-runs@main
+      with:
+        retain_days: 3
+        keep_minimum_runs: 5
+        token: ${{ env.GITHUB_TOKEN }}
+
+    # 1️⃣4️⃣ 删除旧固件
+    - name: 删除自动发布的旧固件
+      uses: dev-drprasad/delete-older-releases@master
+      with:
+        keep_latest: 7
+        delete_tags: true
