@@ -1,0 +1,181 @@
+name: Lede-23.05-ds2
+
+on:
+  repository_dispatch:
+  workflow_dispatch:
+
+env:
+  REPO_URL: https://github.com/coolsnowwolf/lede
+  REPO_BRANCH: master
+  FEEDS_CONF: N1/Lede/LE-feeds.conf.default
+  CONFIG_FILE: N1/Lede/2025-0916.config
+  DIY_P1_SH: N1/Lede/diy-part1.sh
+  DIY_P2_SH: N1/Lede/diy-part2.sh
+  FILES: N1/Lede/files
+  TZ: Asia/Shanghai
+  GITHUB_TOKEN: ${{ secrets.MY_TOKEN }}
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+
+    steps:
+    - name: 创建编译空间挂载点
+      run: |
+        sudo mkdir -p /workdir
+        sudo chown $USER:$GROUPS /workdir
+
+    - name: 最大化编译空间
+      uses: easimon/maximize-build-space@master
+      with:
+        root-reserve-mb: 2048
+        swap-size-mb: 1024
+        build-mount-path: /workdir
+        overprovision-lvm: 'true'
+        remove-dotnet: 'true'
+        remove-android: 'true'
+        remove-haskell: 'true'
+        remove-codeql: 'true'
+        remove-docker-images: 'true'
+
+    - name: 检查Actions
+      uses: actions/checkout@v4
+
+    - name: 初始化编译环境
+      env:
+        DEBIAN_FRONTEND: noninteractive
+      run: |
+        sudo apt-get -qq update
+        sudo apt-get -qq install --no-install-recommends -y \
+          ack antlr3 asciidoc autoconf automake autopoint binutils bison build-essential \
+          bzip2 ccache clang cmake cpio curl device-tree-compiler flex gawk gcc-multilib g++-multilib gettext \
+          genisoimage git gperf haveged help2man intltool libc6-dev-i386 libelf-dev libfuse-dev libglib2.0-dev \
+          libgmp3-dev libltdl-dev libmpc-dev libmpfr-dev libncurses5-dev libncursesw5-dev libpython3-dev \
+          libreadline-dev libssl-dev libtool llvm lrzsz msmtp ninja-build p7zip p7zip-full patch pkgconf \
+          python3 python3-pyelftools python3-setuptools qemu-utils rsync scons squashfs-tools subversion \
+          swig texinfo uglifyjs upx-ucl unzip vim wget xmlto xxd zlib1g-dev
+        sudo apt-get -qq autoremove --purge -y && sudo apt-get -qq clean
+        sudo timedatectl set-timezone "$TZ"
+
+    - name: 缓存 ccache
+      uses: actions/cache@v4
+      with:
+        path: /workdir/.ccache
+        key: ccache-${{ github.ref }}-${{ github.sha }}
+        restore-keys: |
+          ccache-${{ github.ref }}-
+          ccache-
+
+    - name: 克隆源码
+      working-directory: /workdir
+      run: |
+        git clone --depth 1 --single-branch -b $REPO_BRANCH $REPO_URL openwrt
+        ln -sf /workdir/openwrt $GITHUB_WORKSPACE/openwrt
+        cd openwrt
+        echo "DATE=$(date "+%Y-%m-%d %H:%M:%S")" >> $GITHUB_ENV
+        echo "tag_name=$(date +%Y%m%d)" >> $GITHUB_ENV
+
+    - name: 加载DIY_P1
+      run: |
+        [ -e $FEEDS_CONF ] && mv $FEEDS_CONF openwrt/feeds.conf.default
+        chmod +x $DIY_P1_SH
+        cd openwrt
+        $GITHUB_WORKSPACE/$DIY_P1_SH
+
+    - name: 更新并安装 feeds
+      run: |
+        cd openwrt
+        ./scripts/feeds update -a
+        ./scripts/feeds install -a
+
+    - name: 加载DIY_P2
+      run: |
+        [ -e $FILES ] && mv $FILES openwrt/files
+        [ -e $CONFIG_FILE ] && mv $CONFIG_FILE openwrt/.config
+        chmod +x $DIY_P2_SH
+        cd openwrt
+        $GITHUB_WORKSPACE/$DIY_P2_SH
+
+    - name: 缓存 dl
+      uses: actions/cache@v4
+      with:
+        path: openwrt/dl
+        key: dl-${{ hashFiles(env.CONFIG_FILE) }}
+        restore-keys: |
+          dl-
+
+    - name: 下载软件包
+      run: |
+        cd openwrt
+        make defconfig
+        make download -j$(nproc)
+        find dl -size -1024c -exec rm -f {} \;
+
+    - name: 编译固件（仅 N1）
+      run: |
+        cd openwrt
+        export CCACHE_DIR=/workdir/.ccache
+        export CCACHE_COMPRESS=1
+        export CCACHE_MAXSIZE=2G
+        # 强制只编译 N1 目标
+        sed -i '/CONFIG_TARGET_/d' .config
+        echo "CONFIG_TARGET_amlogic=y" >> .config
+        echo "CONFIG_TARGET_amlogic_meson_gx=y" >> .config
+        echo "CONFIG_TARGET_amlogic_meson_gx_DEVICE_phicomm_n1=y" >> .config
+        make -j$(nproc) || make -j1 V=s
+
+    - name: 清理并准备 rootfs
+      run: |
+        mkdir /workdir/upload
+        cp openwrt/bin/targets/*/*/openwrt-amlogic-mesongx-phicomm_n1-rootfs.tar.gz /workdir/upload/
+        mv openwrt/bin/targets/*/*/openwrt-amlogic-mesongx-phicomm_n1-rootfs.tar.gz openwrt-armvirt.tar.gz
+        rm -rf /workdir/openwrt/
+
+    - name: 打包内核（使用 N1 rootfs）
+      uses: unifreq/openwrt_packit@master
+      env:
+        WHOAMI: ham
+        OPENWRT_ARMVIRT: openwrt-armvirt.tar.gz
+        PACKAGE_SOC: s905d
+        KERNEL_AUTO_LATEST: true
+        KERNEL_REPO_URL: breakingbadboy/OpenWrt
+        KERNEL_VERSION_NAME: 6.6.y
+
+    - name: 整理文件
+      run: mv /opt/openwrt_packit/output/* /workdir/upload/
+
+    - name: 发布固件
+      uses: ncipollo/release-action@v1
+      with:
+        name: OpenWrt-N1 → ${{ env.DATE }}
+        tag: N1-23.05_${{ env.tag_name }}
+        artifacts: /workdir/upload/*
+        allowUpdates: true
+        token: ${{ secrets.GITHUB_TOKEN }}
+        body: |
+              ---  使用说明 ---
+              
+              源码: ${{ env.REPO_URL }}
+              分支: ${{ env.REPO_BRANCH }}
+              
+              网关：192.168.123.2
+              用户名：root
+              密码：password
+              
+              更新说明：
+              2025-0418：本固件所含插件，请看主页图片。
+              2025-0919：同步上游的更新，测试DeepSeek优化效果2。
+
+    - name: 删除运行记录
+      uses: Mattraks/delete-workflow-runs@main
+      with:
+        retain_days: 3
+        keep_minimum_runs: 5
+        token: ${{ env.GITHUB_TOKEN }}
+
+    - name: 删除自动发布的旧固件
+      uses: dev-drprasad/delete-older-releases@master
+      if: env.UPLOAD_RELEASE == 'true' && !cancelled()
+      with:
+        keep_latest: 7
+        delete_tags : true
