@@ -18,7 +18,6 @@ env:
   FILES: N1/Lede/files
   TZ: Asia/Shanghai
   GITHUB_TOKEN: ${{ secrets.MY_TOKEN }}
-  MAKE_JOBS: ${{ (github.runner.cpus - 1) > 0 && format('{0}', github.runner.cpus - 1) || '1' }}
   CCACHE_DIR: /workdir/ccache
   CCACHE_MAXSIZE: 10G
 
@@ -33,6 +32,14 @@ jobs:
         sudo mkdir -p /workdir /workdir/ccache
         sudo chown -R $USER:$GROUPS /workdir
         echo "CCACHE_DIR=$CCACHE_DIR" >> $GITHUB_ENV
+
+    - name: 计算编译线程数
+      run: |
+        # 获取CPU核心数并计算最佳线程数（核心数-1）
+        CPUS=$(nproc)
+        MAKE_JOBS=$((CPUS > 1 ? CPUS - 1 : 1))
+        echo "MAKE_JOBS=$MAKE_JOBS" >> $GITHUB_ENV
+        echo "使用 $MAKE_JOBS 个线程进行编译"
 
     - name: 最大化编译空间
       uses: easimon/maximize-build-space@master
@@ -204,4 +211,3 @@ jobs:
         keep_latest: 7
         delete_tags : true
         token: ${{ secrets.GITHUB_TOKEN }}
-        
