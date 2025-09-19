@@ -149,16 +149,16 @@ jobs:
         mkdir openwrt-armvirt
         cp openwrt/bin/targets/*/*/*.tar.gz /workdir/upload/
         mv openwrt/bin/targets/*/*/*.tar.gz openwrt-armvirt/
-        echo -e "
+        echo "
 "
         echo "列出空间占用前10的目录或文件："
         sudo du -h --max-depth=1 /workdir |sort -nr | head -10
         rm -rf /workdir/openwrt/
-        echo -e "
+        echo "
 "
         echo "清理之后："
         df -hT
-        echo -e "
+        echo "
 "
         echo "/workdir路径文件"
         ls -l
@@ -210,5 +210,5 @@ jobs:
       if: env.UPLOAD_RELEASE == 'true' && !cancelled()
       with:
         keep_latest: 7
-        delete_tags: true  # 修正：移除冒号后的多余空格
-        token: ${{ secrets.GITHUB_TOKEN }}  # 确保 token 值正确
+        delete_tags: true
+        token: ${{ secrets.GITHUB_TOKEN }}
