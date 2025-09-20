@@ -170,7 +170,8 @@ jobs:
               
               更新说明：
               2025-0418：本固件所含插件，请看主页图片。
-              2025-0920：同步上游的更新。测试豆包代码。测试只编译一个固件。
+              2025-0920：同步上游的更新。测试豆包代码。测试只编译一个固件：openwrt-amlogic-mesongx-phicomm_n1-rootfs.tar.gz
+
 
     - name: 删除自动发布的旧固件
       uses: dev-drprasad/delete-older-releases@master
