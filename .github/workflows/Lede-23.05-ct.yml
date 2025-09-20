@@ -170,14 +170,7 @@ jobs:
               
               更新说明：
               2025-0418：本固件所含插件，请看主页图片。
-              2025-0919：同步上游的更新。测试copilot代码。
-
-    - name: 删除运行记录
-      uses: Mattraks/delete-workflow-runs@main
-      with:
-        retain_days: 3
-        keep_minimum_runs: 5
-        token: ${{ env.GITHUB_TOKEN }}
+              2025-0920：同步上游的更新。测试copilot代码。测试只编译一个固件。
 
     - name: 删除自动发布的旧固件
       uses: dev-drprasad/delete-older-releases@master
