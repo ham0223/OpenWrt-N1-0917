@@ -51,15 +51,4 @@ git clone https://github.com/sbwml/packages_lang_golang feeds/packages/lang/gola
 sed -i 's/<%:Up%>/<%:Move up%>/g' feeds/luci/modules/luci-compat/luasrc/view/cbi/tblsection.htm
 sed -i 's/<%:Down%>/<%:Move down%>/g' feeds/luci/modules/luci-compat/luasrc/view/cbi/tblsection.htm
 
-# 2025年9月20日 尝试删除一个固件
-# 删除 amlogic/N1 相关配置
-sed -i '/CONFIG_TARGET_amlogic/d' .config
-sed -i '/CONFIG_TARGET_amlogic_mesongx/d' .config
-sed -i '/CONFIG_TARGET_amlogic_mesongx_DEVICE_phicomm_n1/d' .config
-# 确保写入 armsr/armv8/generic
-grep -q 'CONFIG_TARGET_armsr=y' .config || echo 'CONFIG_TARGET_armsr=y' >> .config
-grep -q 'CONFIG_TARGET_armsr_armv8=y' .config || echo 'CONFIG_TARGET_armsr_armv8=y' >> .config
-grep -q 'CONFIG_TARGET_armsr_armv8_DEVICE_generic=y' .config || echo 'CONFIG_TARGET_armsr_armv8_DEVICE_generic=y' >> .config
-# 整理依赖
-make defconfig
 
